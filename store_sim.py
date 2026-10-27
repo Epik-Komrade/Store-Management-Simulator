@@ -8,15 +8,19 @@ import pygame
 from database_setup import (
     DatabaseSetupError,
     add_catalogue_product,
+    add_employee,
     add_shelf_item,
     delete_catalogue_product,
+    delete_employee,
     delete_shelf_item,
     ensure_store_database,
+    load_employees,
     load_finance_data,
     load_product_catalogue,
     load_shelf_inventory,
     set_store_balance,
     update_catalogue_product,
+    update_employee,
     update_shelf_item,
 )
 
@@ -29,32 +33,65 @@ TILE_SIZE = 40
 PLAYER_SPEED = 210  # pixels per second
 INTERACTION_DISTANCE = 52
 
-WINDOW_COLOR = (231, 239, 245)
-FLOOR_COLOR = (250, 247, 238)
-WALL_COLOR = (174, 197, 214)
+from ui_theme import (
+    SHELF_THEME,
+    CATALOGUE_THEME,
+    REGISTER_THEME,
+    EMPLOYEE_THEME,
+    WINDOW_COLOR,
+    FLOOR_COLOR,
+    WALL_COLOR,
+    INFO_PANEL_COLOR,
+    PLAYER_COLOR,
+    ACCENT_COLOR,
+    PANEL_BG,
+    TEXT_PRIMARY as TEXT_COLOR,
+    TEXT_MUTED,
+    INPUT_BG,
+    INPUT_BORDER_DEFAULT,
+    PROFIT_GREEN,
+    LOSS_RED,
+    DELETE_RED,
+    DELETE_RED_HOVER,
+    SCROLL_TRACK_COLOR,
+    OVERLAY_COLOR,
+    get_font,
+    get_fonts_dict,
+    get_drop_shadow,
+    brighten_color,
+    lerp_color,
+)
+from ui_components import (
+    AnimatedButton,
+    AnimatedTextInput,
+    SmoothScroll,
+    clamp,
+    lerp,
+)
 
-# Shelf Palette (Warm Wood / Amber)
-SHELF_COLOR = (207, 157, 96)
-SHELF_EDGE_COLOR = (132, 91, 48)
-SHELF_BUTTON_COLOR = (148, 103, 56)
-SHELF_SELECTED_COLOR = (248, 238, 224)
+# Station Palette aliases for backwards-compatibility
+SHELF_COLOR = SHELF_THEME.tile
+SHELF_EDGE_COLOR = SHELF_THEME.edge
+SHELF_BUTTON_COLOR = SHELF_THEME.button
+SHELF_SELECTED_COLOR = SHELF_THEME.selected
 
-# Product Catalogue Palette (Slate Navy / Steel Blue)
-CATALOGUE_COLOR = (123, 170, 194)
-CATALOGUE_EDGE_COLOR = (53, 104, 133)
-CATALOGUE_BUTTON_COLOR = (60, 115, 146)
-CATALOGUE_SELECTED_COLOR = (218, 235, 246)
+CATALOGUE_COLOR = CATALOGUE_THEME.tile
+CATALOGUE_EDGE_COLOR = CATALOGUE_THEME.edge
+CATALOGUE_BUTTON_COLOR = CATALOGUE_THEME.button
+CATALOGUE_SELECTED_COLOR = CATALOGUE_THEME.selected
 
-# Cash Register Palette (Forest Emerald / Mint)
-REGISTER_COLOR = (112, 177, 151)
-REGISTER_EDGE_COLOR = (44, 111, 86)
-REGISTER_BUTTON_COLOR = (44, 111, 86)
-REGISTER_SELECTED_COLOR = (222, 242, 232)
+REGISTER_COLOR = REGISTER_THEME.tile
+REGISTER_EDGE_COLOR = REGISTER_THEME.edge
+REGISTER_BUTTON_COLOR = REGISTER_THEME.button
+REGISTER_SELECTED_COLOR = REGISTER_THEME.selected
 
-INFO_PANEL_COLOR = (213, 228, 239)
-PLAYER_COLOR = (190, 190, 190)
-TEXT_COLOR = (42, 57, 70)
-ACCENT_COLOR = (55, 126, 174)
+EMPLOYEE_COLOR = EMPLOYEE_THEME.tile
+EMPLOYEE_EDGE_COLOR = EMPLOYEE_THEME.edge
+EMPLOYEE_BUTTON_COLOR = EMPLOYEE_THEME.button
+EMPLOYEE_BUTTON_HOVER = EMPLOYEE_THEME.button_hover
+EMPLOYEE_SELECTED_COLOR = EMPLOYEE_THEME.selected
+
+ROLES = ["Cashier", "Stocker", "Store Assistant"]
 
 
 class GameState:
@@ -65,6 +102,8 @@ class GameState:
     ADD_ITEM = 4
     PRODUCT_EDITOR = 5
     FINANCE_MENU = 6
+    EMPLOYEE_MENU = 7
+    EMPLOYEE_EDITOR = 8
 
 
 class Shelf:
@@ -89,15 +128,37 @@ class CashRegister:
     def __init__(self, grid_x, grid_y):
         self.rect = pygame.Rect(grid_x * TILE_SIZE, grid_y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
 
+
+class EmployeeTerminal:
+    #one staff roster terminal, placed once in the map as E
+
+    def __init__(self, grid_x, grid_y):
+        self.rect = pygame.Rect(grid_x * TILE_SIZE, grid_y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+
 #___________________________________________PLAYER CLASS_______________________________________________________________
+
+def load_sound(filename, volume=0.5):
+    """Load a sound effect safely with volume control, returning None if missing."""
+    filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if os.path.exists(filepath):
+        try:
+            sound = pygame.mixer.Sound(filepath)
+            sound.set_volume(volume)
+            return sound
+        except Exception as error:
+            print(f"Error loading sound {filename}: {error}")
+    return None
+
 
 class Player:
     #minimal manager/player character
 
-    def __init__(self, position):
+    def __init__(self, position, step_sound=None):
         self.rect = pygame.Rect(position[0], position[1], 24, 24)
         self.position = pygame.Vector2(self.rect.topleft)
         self.angle = 0.0
+        self.step_sound = step_sound
+        self.step_timer = 0.28
 
     def update(self, dt, solid_rects):
         keys = pygame.key.get_pressed()
@@ -108,8 +169,19 @@ class Player:
         if direction.length_squared() > 0:
             direction = direction.normalize()
 
+        old_position = pygame.Vector2(self.position)
         self._move(direction.x * PLAYER_SPEED * dt, 0, solid_rects)
         self._move(0, direction.y * PLAYER_SPEED * dt, solid_rects)
+
+        actually_moved = (self.position - old_position).length_squared() > 0.01
+        if actually_moved:
+            self.step_timer += dt
+            if self.step_timer >= 0.28:
+                if self.step_sound:
+                    self.step_sound.play()
+                self.step_timer = 0.0
+        else:
+            self.step_timer = 0.28
 
         mouse_x, mouse_y = pygame.mouse.get_pos()
         center_x, center_y = self.rect.center
@@ -167,6 +239,7 @@ def load_store_map(filename, inventory_by_position):
     shelves = []
     catalogue = None
     cash_register = None
+    employee_terminal = None
     player_spawn = None
     for grid_y, line in enumerate(lines):
         for grid_x, tile in enumerate(line):
@@ -189,6 +262,10 @@ def load_store_map(filename, inventory_by_position):
                 if cash_register is not None:
                     raise ValueError("The store map can contain only one cash register (R).")
                 cash_register = CashRegister(grid_x, grid_y)
+            elif tile == "E":
+                if employee_terminal is not None:
+                    raise ValueError("The store map can contain only one employee terminal (E).")
+                employee_terminal = EmployeeTerminal(grid_x, grid_y)
             elif tile == "P":
                 if player_spawn is not None:
                     raise ValueError("The store map can contain only one player spawn (P).")
@@ -202,8 +279,10 @@ def load_store_map(filename, inventory_by_position):
         raise ValueError("The store map needs one product catalogue (C).")
     if cash_register is None:
         raise ValueError("The store map needs one cash register (R).")
+    if employee_terminal is None:
+        raise ValueError("The store map needs one employee terminal (E).")
 
-    return walls, shelves, catalogue, cash_register, player_spawn
+    return walls, shelves, catalogue, cash_register, employee_terminal, player_spawn
 
 #_________________________________________SHELF INTERACTION CHECKS_________________________________________________________________
 
@@ -214,12 +293,12 @@ def distance_to_rect(point, rect):
     return math.hypot(point[0] - nearest_x, point[1] - nearest_y)
 
 
-def get_targeted_object(player, shelves, catalogue, cash_register):
+def get_targeted_object(player, shelves, catalogue, cash_register, employee_terminal):
     #store objects are usable only when close to the manager and mouse aimed
     mouse_position = pygame.mouse.get_pos()
     candidates = [
         item
-        for item in [*shelves, catalogue, cash_register]
+        for item in [*shelves, catalogue, cash_register, employee_terminal]
         if item.rect.collidepoint(mouse_position)
         and distance_to_rect(player.rect.center, item.rect) <= INTERACTION_DISTANCE
     ]
@@ -272,21 +351,38 @@ def scroll_start_from_mouse(track, item_count, visible_rows, mouse_y):
     return round((thumb_top - track.y) * max_start / travel)
 
 
-def draw_button(surface, rect, label, color, font):
-    pygame.draw.rect(surface, color, rect, border_radius=7)
+def draw_button(surface, rect, label, color, font, hover_color=None, border_radius=7):
+    mouse_pos = pygame.mouse.get_pos()
+    is_hovered = rect.collidepoint(mouse_pos)
+    effective_hover = hover_color or brighten_color(color, 25)
+    btn_color = effective_hover if is_hovered else color
+
+    # Subtle 1px lift on hover
+    draw_rect = rect.move(0, -1) if is_hovered else rect
+
+    if is_hovered:
+        shadow_rect = rect.move(0, 2)
+        pygame.draw.rect(surface, (0, 0, 0, 30), shadow_rect, border_radius=border_radius)
+
+    pygame.draw.rect(surface, btn_color, draw_rect, border_radius=border_radius)
     label_surface = font.render(label, True, (255, 255, 255))
-    surface.blit(label_surface, label_surface.get_rect(center=rect.center))
+    surface.blit(label_surface, label_surface.get_rect(center=draw_rect.center))
 
 
 def draw_shelf_menu(surface, fonts, shelf, selected_item_id, first_item, message):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 115))
+    overlay.fill((*OVERLAY_COLOR, 130))
     surface.blit(overlay, (0, 0))
 
     panel, header_y, rows, add_button, edit_button, visible_rows, scroll_track, scroll_thumb = shelf_menu_layout(
         shelf, selected_item_id, first_item
     )
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, SHELF_EDGE_COLOR, panel, 3, border_radius=10)
 
     title = fonts["title"].render(f"Shelf {shelf.shelf_id} Inventory", True, TEXT_COLOR)
@@ -298,35 +394,39 @@ def draw_shelf_menu(surface, fonts, shelf, selected_item_id, first_item, message
         header = fonts["body"].render(heading, True, SHELF_EDGE_COLOR)
         surface.blit(header, (panel.x + offset, header_y))
 
+    mouse_pos = pygame.mouse.get_pos()
     for item, row_rect, delete_rect in rows:
         item_id, item_name, quantity, price = item
         if item_id == selected_item_id:
-            pygame.draw.rect(surface, SHELF_SELECTED_COLOR, row_rect, border_radius=5)
+            pygame.draw.rect(surface, SHELF_SELECTED_COLOR, row_rect, border_radius=6)
+        elif row_rect.collidepoint(mouse_pos):
+            pygame.draw.rect(surface, (248, 244, 238), row_rect, border_radius=6)
+
         values = (str(item_id), item_name, str(quantity), f"Rs. {price:.2f}")
         for value, (_, offset) in zip(values, columns):
             text = fonts["body"].render(value, True, TEXT_COLOR)
             surface.blit(text, (panel.x + offset, row_rect.y + 7))
-        draw_button(surface, delete_rect, "X", (184, 79, 79), fonts["body"])
+        draw_button(surface, delete_rect, "X", DELETE_RED, fonts["body"], hover_color=DELETE_RED_HOVER)
 
     draw_button(surface, add_button, "+", SHELF_BUTTON_COLOR, fonts["body"])
     if edit_button:
         draw_button(surface, edit_button, "Edit", SHELF_EDGE_COLOR, fonts["body"])
 
     if message:
-        message_text = fonts["small"].render(message, True, (178, 65, 65))
+        message_text = fonts["small"].render(message, True, LOSS_RED)
         surface.blit(message_text, (panel.x + 24, panel.bottom - 34))
     else:
-        hint = fonts["small"].render("Click a row to select  |  Mouse wheel to browse  |  E or Esc to close", True, (92, 106, 118))
+        hint = fonts["small"].render("Click a row to select  |  Mouse wheel to browse  |  E or Esc to close", True, TEXT_MUTED)
         surface.blit(hint, (panel.x + 24, panel.bottom - 34))
 
     if len(shelf.items) > visible_rows:
         page_text = fonts["small"].render(
             f"Items {first_item + 1}-{min(first_item + visible_rows, len(shelf.items))} of {len(shelf.items)}",
             True,
-            (92, 106, 118),
+            TEXT_MUTED,
         )
         surface.blit(page_text, (panel.x + 200, panel.bottom - 67))
-        pygame.draw.rect(surface, INFO_PANEL_COLOR, scroll_track, border_radius=4)
+        pygame.draw.rect(surface, SCROLL_TRACK_COLOR, scroll_track, border_radius=4)
         pygame.draw.rect(surface, SHELF_EDGE_COLOR, scroll_thumb, border_radius=4)
 
 
@@ -348,12 +448,32 @@ def item_editor_layout():
     )
 
 
-def draw_input_box(surface, rect, text, active, font, outline_color=ACCENT_COLOR):
-    outline = outline_color if active else (154, 172, 184)
-    pygame.draw.rect(surface, (250, 252, 253), rect, border_radius=5)
-    pygame.draw.rect(surface, outline, rect, 2, border_radius=5)
-    value = font.render(text, True, TEXT_COLOR)
-    surface.blit(value, value.get_rect(center=rect.center))
+def draw_input_box(
+    surface,
+    rect,
+    text,
+    active,
+    font,
+    outline_color=ACCENT_COLOR,
+    cursor_visible=True,
+    placeholder="",
+):
+    pygame.draw.rect(surface, INPUT_BG, rect, border_radius=6)
+    border_color = outline_color if active else INPUT_BORDER_DEFAULT
+    border_w = 2 if active else 1
+    pygame.draw.rect(surface, border_color, rect, border_w, border_radius=6)
+
+    display_text = text if (text or active) else placeholder
+    text_color = TEXT_COLOR if text else TEXT_MUTED
+    value = font.render(display_text, True, text_color)
+    val_rect = value.get_rect(center=rect.center)
+    surface.blit(value, val_rect)
+
+    if active and cursor_visible:
+        cursor_x = val_rect.right + 2 if text else rect.centerx
+        cursor_y1 = rect.centery - font.get_height() // 2 + 3
+        cursor_y2 = rect.centery + font.get_height() // 2 - 3
+        pygame.draw.line(surface, outline_color, (cursor_x, cursor_y1), (cursor_x, cursor_y2), 2)
 
 
 def product_picker_layout(available_products, first_item):
@@ -371,37 +491,52 @@ def product_picker_layout(available_products, first_item):
 
 def draw_product_picker(surface, fonts, available_products, first_item):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 140))
+    overlay.fill((*OVERLAY_COLOR, 145))
     surface.blit(overlay, (0, 0))
     panel, rows, track, thumb, cancel, visible_rows = product_picker_layout(available_products, first_item)
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, CATALOGUE_EDGE_COLOR, panel, 3, border_radius=10)
     title = fonts["title"].render("Choose Product", True, TEXT_COLOR)
     surface.blit(title, (panel.x + 28, panel.y + 22))
     surface.blit(fonts["small"].render("Item ID", True, CATALOGUE_EDGE_COLOR), (panel.x + 28, panel.y + 68))
     surface.blit(fonts["small"].render("Product name", True, CATALOGUE_EDGE_COLOR), (panel.x + 145, panel.y + 68))
     surface.blit(fonts["small"].render("Price", True, CATALOGUE_EDGE_COLOR), (panel.right - 115, panel.y + 68))
+
+    mouse_pos = pygame.mouse.get_pos()
     for item, row in rows:
         item_id, item_name, price, minimum_quantity, maximum_quantity = item
-        pygame.draw.rect(surface, (239, 246, 250), row, border_radius=5)
+        row_bg = (226, 238, 246) if row.collidepoint(mouse_pos) else (239, 246, 250)
+        pygame.draw.rect(surface, row_bg, row, border_radius=5)
         label = fonts["body"].render(f"{item_id:<5}  {item_name}", True, TEXT_COLOR)
         surface.blit(label, (row.x + 12, row.y + 7))
         price_label = fonts["body"].render(f"Rs. {price}", True, TEXT_COLOR)
         surface.blit(price_label, (row.right - 115, row.y + 7))
-    pygame.draw.rect(surface, INFO_PANEL_COLOR, track, border_radius=4)
+    pygame.draw.rect(surface, SCROLL_TRACK_COLOR, track, border_radius=4)
     pygame.draw.rect(surface, CATALOGUE_EDGE_COLOR, thumb, border_radius=4)
     draw_button(surface, cancel, "Cancel", (130, 142, 152), fonts["body"])
 
 
-def draw_item_editor(surface, fonts, item, quantity_text, price_text, add_mode, active_input):
+def draw_item_editor(
+    surface, fonts, item, quantity_text, price_text, add_mode, active_input, cursor_visible=True
+):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 115))
+    overlay.fill((*OVERLAY_COLOR, 130))
     surface.blit(overlay, (0, 0))
     (
         panel, product_button, quantity_down, quantity_up, quantity_box,
         price_down, price_up, price_box, save_button, cancel_button,
     ) = item_editor_layout()
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, SHELF_EDGE_COLOR, panel, 3, border_radius=10)
     title = fonts["title"].render("Add Shelf Item" if add_mode else "Edit Shelf Item", True, TEXT_COLOR)
     surface.blit(title, (panel.x + 28, panel.y + 22))
@@ -416,8 +551,14 @@ def draw_item_editor(surface, fonts, item, quantity_text, price_text, add_mode, 
     draw_button(surface, quantity_up, "+", SHELF_BUTTON_COLOR, fonts["body"])
     draw_button(surface, price_down, "-", SHELF_BUTTON_COLOR, fonts["body"])
     draw_button(surface, price_up, "+", SHELF_BUTTON_COLOR, fonts["body"])
-    draw_input_box(surface, quantity_box, quantity_text, active_input == "quantity", fonts["body"], SHELF_EDGE_COLOR)
-    draw_input_box(surface, price_box, price_text, active_input == "price", fonts["body"], SHELF_EDGE_COLOR)
+    draw_input_box(
+        surface, quantity_box, quantity_text, active_input == "quantity",
+        fonts["body"], SHELF_EDGE_COLOR, cursor_visible=cursor_visible
+    )
+    draw_input_box(
+        surface, price_box, price_text, active_input == "price",
+        fonts["body"], SHELF_EDGE_COLOR, cursor_visible=cursor_visible
+    )
     draw_button(surface, save_button, "Save", SHELF_EDGE_COLOR, fonts["body"])
     draw_button(surface, cancel_button, "Cancel", (130, 142, 152), fonts["body"])
 
@@ -450,14 +591,19 @@ def catalogue_menu_layout(products, selected_item_id, first_item):
 
 def draw_catalogue_menu(surface, fonts, products, selected_item_id, first_item, message):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 115))
+    overlay.fill((*OVERLAY_COLOR, 130))
     surface.blit(overlay, (0, 0))
 
     (
         panel, header_y, rows, add_button, edit_button,
         visible_rows, scroll_track, scroll_thumb,
     ) = catalogue_menu_layout(products, selected_item_id, first_item)
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, CATALOGUE_EDGE_COLOR, panel, 3, border_radius=10)
 
     title = fonts["title"].render("Store Product Catalogue", True, TEXT_COLOR)
@@ -475,10 +621,14 @@ def draw_catalogue_menu(surface, fonts, products, selected_item_id, first_item, 
         header = fonts["body"].render(heading, True, CATALOGUE_EDGE_COLOR)
         surface.blit(header, (panel.x + offset, header_y))
 
+    mouse_pos = pygame.mouse.get_pos()
     for item, row_rect, delete_rect in rows:
         item_id, item_name, price, minimum_quantity, maximum_quantity = item
         if item_id == selected_item_id:
-            pygame.draw.rect(surface, CATALOGUE_SELECTED_COLOR, row_rect, border_radius=5)
+            pygame.draw.rect(surface, CATALOGUE_SELECTED_COLOR, row_rect, border_radius=6)
+        elif row_rect.collidepoint(mouse_pos):
+            pygame.draw.rect(surface, (244, 248, 252), row_rect, border_radius=6)
+
         values = (
             str(item_id),
             item_name,
@@ -488,14 +638,14 @@ def draw_catalogue_menu(surface, fonts, products, selected_item_id, first_item, 
         for value, (_, offset) in zip(values, columns):
             text = fonts["body"].render(value, True, TEXT_COLOR)
             surface.blit(text, (panel.x + offset, row_rect.y + 7))
-        draw_button(surface, delete_rect, "X", (184, 79, 79), fonts["body"])
+        draw_button(surface, delete_rect, "X", DELETE_RED, fonts["body"], hover_color=DELETE_RED_HOVER)
 
     draw_button(surface, add_button, "+", CATALOGUE_BUTTON_COLOR, fonts["body"])
     if edit_button:
         draw_button(surface, edit_button, "Edit", CATALOGUE_EDGE_COLOR, fonts["body"])
 
     if scroll_track:
-        pygame.draw.rect(surface, INFO_PANEL_COLOR, scroll_track, border_radius=4)
+        pygame.draw.rect(surface, SCROLL_TRACK_COLOR, scroll_track, border_radius=4)
         pygame.draw.rect(surface, CATALOGUE_EDGE_COLOR, scroll_thumb, border_radius=4)
 
     if products:
@@ -503,15 +653,15 @@ def draw_catalogue_menu(surface, fonts, products, selected_item_id, first_item, 
         page_label = f"Products {first_item + 1}-{last_item} of {len(products)}"
     else:
         page_label = "No catalogue products yet"
-    page_text = fonts["body"].render(page_label, True, (92, 106, 118))
+    page_text = fonts["body"].render(page_label, True, TEXT_MUTED)
     surface.blit(page_text, (panel.x + 205, panel.bottom - 56))
     if message:
-        hint = fonts["small"].render(message, True, (178, 65, 65))
+        hint = fonts["small"].render(message, True, LOSS_RED)
     else:
         hint = fonts["small"].render(
             "Click a row to select  |  Mouse wheel: browse  |  E or Esc: close",
             True,
-            (92, 106, 118),
+            TEXT_MUTED,
         )
     surface.blit(hint, (panel.x + 28, panel.bottom - 22))
 
@@ -540,15 +690,20 @@ def product_editor_layout():
     )
 
 
-def draw_product_editor(surface, fonts, fields, active_input, add_mode, message):
+def draw_product_editor(surface, fonts, fields, active_input, add_mode, message, cursor_visible=True):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 135))
+    overlay.fill((*OVERLAY_COLOR, 135))
     surface.blit(overlay, (0, 0))
     (
         panel, boxes, minimum_down, minimum_up, maximum_down, maximum_up,
         save_button, cancel_button,
     ) = product_editor_layout()
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, CATALOGUE_EDGE_COLOR, panel, 3, border_radius=10)
     title = fonts["title"].render("Add Product" if add_mode else "Edit Product", True, TEXT_COLOR)
     surface.blit(title, (panel.x + 28, panel.y + 20))
@@ -566,7 +721,8 @@ def draw_product_editor(surface, fonts, fields, active_input, add_mode, message)
             (panel.x + 36, boxes[key].y + 9),
         )
         draw_input_box(
-            surface, boxes[key], fields[key], active_input == key, fonts["body"], CATALOGUE_EDGE_COLOR
+            surface, boxes[key], fields[key], active_input == key, fonts["body"],
+            CATALOGUE_EDGE_COLOR, cursor_visible=cursor_visible
         )
 
     for button, label in (
@@ -577,7 +733,7 @@ def draw_product_editor(surface, fonts, fields, active_input, add_mode, message)
     draw_button(surface, save_button, "Save", CATALOGUE_EDGE_COLOR, fonts["body"])
     draw_button(surface, cancel_button, "Cancel", (130, 142, 152), fonts["body"])
     if message:
-        warning = fonts["small"].render(message, True, (178, 65, 65))
+        warning = fonts["small"].render(message, True, LOSS_RED)
         surface.blit(warning, (panel.x + 30, panel.bottom - 85))
 
 
@@ -604,10 +760,10 @@ def finance_menu_layout(history, first_item):
 
 
 def draw_finance_menu(
-    surface, fonts, current_balance, balance_text, history, first_item, active_input, message
+    surface, fonts, current_balance, balance_text, history, first_item, active_input, message, cursor_visible=True
 ):
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    overlay.fill((35, 50, 65, 115))
+    overlay.fill((*OVERLAY_COLOR, 130))
     surface.blit(overlay, (0, 0))
 
     (
@@ -615,7 +771,11 @@ def draw_finance_menu(
         visible_rows, scroll_track, scroll_thumb,
     ) = finance_menu_layout(history, first_item)
 
-    pygame.draw.rect(surface, (255, 255, 255), panel, border_radius=10)
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
     pygame.draw.rect(surface, REGISTER_EDGE_COLOR, panel, 3, border_radius=10)
 
     title = fonts["title"].render("Cash Register & Finance", True, TEXT_COLOR)
@@ -633,17 +793,23 @@ def draw_finance_menu(
     surface.blit(set_label, (panel.x + 28, panel.y + 111))
 
     draw_input_box(
-        surface, balance_box, balance_text, active_input, fonts["body"], REGISTER_EDGE_COLOR
+        surface,
+        balance_box,
+        balance_text,
+        active_input,
+        fonts["body"],
+        REGISTER_EDGE_COLOR,
+        cursor_visible=cursor_visible,
     )
     draw_button(surface, update_button, "Update", REGISTER_BUTTON_COLOR, fonts["body"])
 
     if message:
         if message.startswith("Profit"):
-            msg_color = (47, 116, 79)
+            msg_color = PROFIT_GREEN
         elif "unchanged" in message:
-            msg_color = (92, 106, 118)
+            msg_color = TEXT_MUTED
         else:
-            msg_color = (178, 65, 65)
+            msg_color = LOSS_RED
         message_surface = fonts["small"].render(message, True, msg_color)
         surface.blit(message_surface, (panel.x + 430, panel.y + 114))
 
@@ -659,8 +825,9 @@ def draw_finance_menu(
         header = fonts["body"].render(heading, True, REGISTER_EDGE_COLOR)
         surface.blit(header, (panel.x + offset, header_y))
 
+    mouse_pos = pygame.mouse.get_pos()
     if not history:
-        empty_text = fonts["body"].render("No finance transactions recorded yet.", True, (92, 106, 118))
+        empty_text = fonts["body"].render("No finance transactions recorded yet.", True, TEXT_MUTED)
         surface.blit(empty_text, empty_text.get_rect(center=(panel.centerx, header_y + 80)))
     else:
         for entry, row_rect in rows:
@@ -672,16 +839,21 @@ def draw_finance_menu(
                 f"{amount_sign}Rs. {amount:,.2f}",
                 f"Rs. {new_balance:,.2f}",
             )
+
+            # Subtle row hover
+            if row_rect.collidepoint(mouse_pos):
+                pygame.draw.rect(surface, (244, 250, 246), row_rect, border_radius=6)
+
             for value, (heading, offset) in zip(values, columns):
                 if heading in ("Amount", "Change"):
-                    val_color = (47, 116, 79) if change_type == "Profit" else (178, 65, 65)
+                    val_color = PROFIT_GREEN if change_type == "Profit" else LOSS_RED
                 else:
                     val_color = TEXT_COLOR
                 text = fonts["body"].render(value, True, val_color)
                 surface.blit(text, (panel.x + offset, row_rect.y + 6))
 
     if scroll_track:
-        pygame.draw.rect(surface, INFO_PANEL_COLOR, scroll_track, border_radius=4)
+        pygame.draw.rect(surface, SCROLL_TRACK_COLOR, scroll_track, border_radius=4)
         pygame.draw.rect(surface, REGISTER_EDGE_COLOR, scroll_thumb, border_radius=4)
 
     if history:
@@ -689,19 +861,203 @@ def draw_finance_menu(
         page_label = f"Entries {first_item + 1}-{last_item} of {len(history)}"
     else:
         page_label = "No finance entries yet"
-    page_text = fonts["body"].render(page_label, True, (92, 106, 118))
+    page_text = fonts["body"].render(page_label, True, TEXT_MUTED)
     surface.blit(page_text, (panel.x + 28, panel.bottom - 54))
 
     hint = fonts["small"].render(
         "Click balance to edit  |  Enter or Update: save  |  E or Esc: close",
         True,
-        (92, 106, 118),
+        TEXT_MUTED,
     )
     surface.blit(hint, (panel.x + 28, panel.bottom - 22))
 
+
+#________________________________________EMPLOYEE MENU__________________________________________________________________
+
+def employee_menu_layout(employees, selected_emp_id, first_item):
+    panel = pygame.Rect(115, 24, 770, 552)
+    header_y = panel.y + 104
+    visible_rows = min(7, max(1, len(employees)))
+    rows = []
+    for row_index, emp in enumerate(employees[first_item:first_item + visible_rows]):
+        row_rect = pygame.Rect(panel.x + 22, header_y + 38 + row_index * 42, 642, 38)
+        delete_rect = pygame.Rect(panel.right - 78, row_rect.y + 2, 28, 32)
+        rows.append((emp, row_rect, delete_rect))
+
+    add_button = pygame.Rect(panel.x + 28, panel.bottom - 62, 120, 36)
+    edit_button = None
+    if selected_emp_id is not None:
+        edit_button = pygame.Rect(panel.x + 160, panel.bottom - 62, 100, 36)
+
+    scroll_track = None
+    scroll_thumb = None
+    if len(employees) > visible_rows:
+        scroll_track = pygame.Rect(panel.right - 27, header_y + 38, 8, visible_rows * 42 - 4)
+        scroll_thumb = make_scroll_thumb(scroll_track, len(employees), visible_rows, first_item)
+    return (
+        panel, header_y, rows, add_button, edit_button,
+        visible_rows, scroll_track, scroll_thumb,
+    )
+
+
+def draw_employee_menu(surface, fonts, employees, selected_emp_id, first_item, message):
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((*OVERLAY_COLOR, 130))
+    surface.blit(overlay, (0, 0))
+
+    (
+        panel, header_y, rows, add_button, edit_button,
+        visible_rows, scroll_track, scroll_thumb,
+    ) = employee_menu_layout(employees, selected_emp_id, first_item)
+
+    # Soft drop shadow
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
+    pygame.draw.rect(surface, EMPLOYEE_EDGE_COLOR, panel, 3, border_radius=10)
+
+    title = fonts["title"].render("Store Employee Register", True, TEXT_COLOR)
+    surface.blit(title, (panel.x + 28, panel.y + 22))
+
+    total_payroll = sum(emp[3] for emp in employees)
+    stats_text = f"Active Staff: {len(employees)}   |   Total Monthly Payroll: Rs. {total_payroll:,.2f}"
+    stats_rendered = fonts["small"].render(stats_text, True, EMPLOYEE_EDGE_COLOR)
+    surface.blit(stats_rendered, (panel.x + 30, panel.y + 68))
+
+    columns = [("Emp ID", 30), ("Staff Name", 140), ("Store Role", 370), ("Monthly Salary", 520)]
+    pygame.draw.line(
+        surface,
+        EMPLOYEE_EDGE_COLOR,
+        (panel.x + 25, header_y + 28),
+        (panel.right - 25, header_y + 28),
+        2,
+    )
+    for heading, offset in columns:
+        header = fonts["body"].render(heading, True, EMPLOYEE_EDGE_COLOR)
+        surface.blit(header, (panel.x + offset, header_y))
+
+    mouse_pos = pygame.mouse.get_pos()
+    for emp, row_rect, delete_rect in rows:
+        emp_id, name, role, salary, hire_date = emp
+        if emp_id == selected_emp_id:
+            pygame.draw.rect(surface, EMPLOYEE_SELECTED_COLOR, row_rect, border_radius=6)
+        elif row_rect.collidepoint(mouse_pos):
+            pygame.draw.rect(surface, (246, 244, 252), row_rect, border_radius=6)
+
+        values = (
+            str(emp_id),
+            name,
+            role,
+            f"Rs. {salary:,.2f}",
+        )
+        for value, (_, offset) in zip(values, columns):
+            text = fonts["body"].render(value, True, TEXT_COLOR)
+            surface.blit(text, (panel.x + offset, row_rect.y + 7))
+
+        draw_button(surface, delete_rect, "X", DELETE_RED, fonts["body"], hover_color=DELETE_RED_HOVER)
+
+    draw_button(surface, add_button, "+ Hire Staff", EMPLOYEE_BUTTON_COLOR, fonts["body"])
+    if edit_button:
+        draw_button(surface, edit_button, "Edit", EMPLOYEE_BUTTON_COLOR, fonts["body"])
+
+    if scroll_track and scroll_thumb:
+        pygame.draw.rect(surface, SCROLL_TRACK_COLOR, scroll_track, border_radius=4)
+        pygame.draw.rect(surface, EMPLOYEE_EDGE_COLOR, scroll_thumb, border_radius=4)
+
+    if message:
+        msg_rendered = fonts["small"].render(message, True, LOSS_RED)
+        surface.blit(msg_rendered, (panel.x + 280, panel.bottom - 55))
+
+    hint = fonts["small"].render(
+        "Click a staff member to select • Click + Hire Staff to recruit • Press E or Esc to return",
+        True,
+        TEXT_MUTED,
+    )
+    surface.blit(hint, (panel.x + 28, panel.bottom - 22))
+
+
+def employee_editor_layout():
+    panel = pygame.Rect(250, 48, 500, 505)
+    field_x = panel.x + 175
+    field_width = 265
+    start_y = panel.y + 84
+    boxes = {
+        "employee_id": pygame.Rect(field_x, start_y, field_width, 36),
+        "name": pygame.Rect(field_x, start_y + 57, field_width, 36),
+        "salary": pygame.Rect(field_x + 55, start_y + 171, 110, 36),
+    }
+    role_prev = pygame.Rect(field_x, start_y + 114, 40, 36)
+    role_box = pygame.Rect(field_x + 45, start_y + 114, field_width - 90, 36)
+    role_next = pygame.Rect(field_x + field_width - 40, start_y + 114, 40, 36)
+    salary_down = pygame.Rect(field_x + 5, start_y + 171, 45, 36)
+    salary_up = pygame.Rect(field_x + 170, start_y + 171, 45, 36)
+    save_button = pygame.Rect(panel.x + 90, panel.bottom - 54, 120, 36)
+    cancel_button = pygame.Rect(panel.x + 290, panel.bottom - 54, 120, 36)
+    return (
+        panel, boxes, role_prev, role_box, role_next,
+        salary_down, salary_up, save_button, cancel_button,
+    )
+
+
+def draw_employee_editor(surface, fonts, fields, active_input, add_mode, message, cursor_visible=True):
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((*OVERLAY_COLOR, 135))
+    surface.blit(overlay, (0, 0))
+
+    (
+        panel, boxes, role_prev, role_box, role_next,
+        salary_down, salary_up, save_button, cancel_button,
+    ) = employee_editor_layout()
+
+    shadow = get_drop_shadow(panel.width, panel.height, radius=10, blur=14, alpha=50, offset_y=5)
+    surface.blit(shadow, (panel.x - 14, panel.y - 9))
+
+    pygame.draw.rect(surface, PANEL_BG, panel, border_radius=10)
+    pygame.draw.rect(surface, EMPLOYEE_EDGE_COLOR, panel, 3, border_radius=10)
+
+    title = fonts["title"].render("Hire Staff Member" if add_mode else "Edit Staff Details", True, TEXT_COLOR)
+    surface.blit(title, (panel.x + 28, panel.y + 20))
+
+    surface.blit(fonts["small"].render("Employee ID", True, TEXT_COLOR), (panel.x + 36, boxes["employee_id"].y + 9))
+    surface.blit(fonts["small"].render("Staff Name", True, TEXT_COLOR), (panel.x + 36, boxes["name"].y + 9))
+    surface.blit(fonts["small"].render("Store Role", True, TEXT_COLOR), (panel.x + 36, role_box.y + 9))
+    surface.blit(fonts["small"].render("Monthly Salary", True, TEXT_COLOR), (panel.x + 36, boxes["salary"].y + 9))
+
+    draw_input_box(
+        surface, boxes["employee_id"], fields["employee_id"], active_input == "employee_id",
+        fonts["body"], EMPLOYEE_EDGE_COLOR, cursor_visible=cursor_visible
+    )
+    draw_input_box(
+        surface, boxes["name"], fields["name"], active_input == "name",
+        fonts["body"], EMPLOYEE_EDGE_COLOR, cursor_visible=cursor_visible
+    )
+    draw_input_box(
+        surface, boxes["salary"], fields["salary"], active_input == "salary",
+        fonts["body"], EMPLOYEE_EDGE_COLOR, cursor_visible=cursor_visible
+    )
+
+    draw_button(surface, role_prev, "<", EMPLOYEE_BUTTON_COLOR, fonts["body"])
+    pygame.draw.rect(surface, INPUT_BG, role_box, border_radius=6)
+    pygame.draw.rect(surface, EMPLOYEE_EDGE_COLOR, role_box, 2, border_radius=6)
+    role_rendered = fonts["body"].render(fields.get("role", "Cashier"), True, TEXT_COLOR)
+    surface.blit(role_rendered, role_rendered.get_rect(center=role_box.center))
+    draw_button(surface, role_next, ">", EMPLOYEE_BUTTON_COLOR, fonts["body"])
+
+    draw_button(surface, salary_down, "-1k", EMPLOYEE_BUTTON_COLOR, fonts["small"])
+    draw_button(surface, salary_up, "+1k", EMPLOYEE_BUTTON_COLOR, fonts["small"])
+
+    draw_button(surface, save_button, "Save", EMPLOYEE_BUTTON_COLOR, fonts["body"])
+    draw_button(surface, cancel_button, "Cancel", (130, 140, 150), fonts["body"])
+
+    if message:
+        rendered_msg = fonts["small"].render(message, True, LOSS_RED)
+        surface.blit(rendered_msg, (panel.x + 36, panel.bottom - 90))
+
+
 #________________________________________WORLD DRAW__________________________________________________________________
 
-def draw_world(surface, player, walls, shelves, catalogue, cash_register, targeted_object, fonts):
+def draw_world(surface, player, walls, shelves, catalogue, cash_register, employee_terminal, targeted_object, fonts):
     surface.fill(WINDOW_COLOR)
     game_area = pygame.Rect(0, 0, SCREEN_WIDTH, MAP_HEIGHT)
     pygame.draw.rect(surface, FLOOR_COLOR, game_area)
@@ -738,6 +1094,16 @@ def draw_world(surface, player, walls, shelves, catalogue, cash_register, target
         2,
     )
 
+    emp_color = EMPLOYEE_EDGE_COLOR if employee_terminal is targeted_object else EMPLOYEE_COLOR
+    pygame.draw.rect(surface, EMPLOYEE_COLOR, employee_terminal.rect, border_radius=4)
+    pygame.draw.rect(surface, emp_color, employee_terminal.rect, 3, border_radius=4)
+    badge_rect = pygame.Rect(employee_terminal.rect.centerx - 7, employee_terminal.rect.centery - 9, 14, 18)
+    pygame.draw.rect(surface, (255, 255, 255), badge_rect, border_radius=2)
+    pygame.draw.rect(surface, emp_color, badge_rect, 1, border_radius=2)
+    pygame.draw.line(surface, emp_color, (badge_rect.x + 3, badge_rect.y + 5), (badge_rect.right - 4, badge_rect.y + 5), 2)
+    pygame.draw.line(surface, (140, 140, 140), (badge_rect.x + 3, badge_rect.y + 9), (badge_rect.right - 4, badge_rect.y + 9), 1)
+    pygame.draw.line(surface, (140, 140, 140), (badge_rect.x + 3, badge_rect.y + 13), (badge_rect.right - 4, badge_rect.y + 13), 1)
+
     player.draw(surface)
     instructions = fonts["body"].render("Movement: WASD | Interaction: E", True, TEXT_COLOR)
     info_panel = pygame.Rect(0, MAP_HEIGHT, SCREEN_WIDTH, HUD_HEIGHT)
@@ -750,8 +1116,12 @@ def draw_world(surface, player, walls, shelves, catalogue, cash_register, target
             prompt_text = "Press E to inspect shelf"
         elif isinstance(targeted_object, ProductCatalogue):
             prompt_text = "Press E to open product catalogue"
-        else:
+        elif isinstance(targeted_object, CashRegister):
             prompt_text = "Press E to open cash register"
+        elif isinstance(targeted_object, EmployeeTerminal):
+            prompt_text = "Press E to open employee terminal"
+        else:
+            prompt_text = "Press E to interact"
         prompt = fonts["body"].render(prompt_text, True, ACCENT_COLOR)
         surface.blit(prompt, (20, MAP_HEIGHT + 43))
 
@@ -807,8 +1177,16 @@ def catalogue_item_by_id(products, item_id):
 
 def main():
     pygame.init()
+    try:
+        pygame.mixer.init()
+    except Exception as error:
+        print(f"Audio device initialization note: {error}")
+
+    step_sound = load_sound("step.wav", volume=0.35)
+    interact_sound = load_sound("fruit1.wav", volume=0.45)
+
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("Store Management Simulator - Shelf Prototype")
+    pygame.display.set_caption("Store Management Simulator v0.9.0")
     clock = pygame.time.Clock()
     fonts = {
         "body": pygame.font.SysFont("Arial", 22),
@@ -823,7 +1201,8 @@ def main():
         inventory_by_position = load_shelf_inventory(map_path)
         product_catalogue = list(load_product_catalogue(map_path))
         finance_balance, finance_history = load_finance_data(map_path)
-        walls, shelves, catalogue, cash_register, player_spawn = load_store_map(
+        employees = list(load_employees(map_path))
+        walls, shelves, catalogue, cash_register, employee_terminal, player_spawn = load_store_map(
             map_path, inventory_by_position
         )
     except (OSError, ValueError, DatabaseSetupError) as error:
@@ -831,8 +1210,8 @@ def main():
         pygame.quit()
         return
 
-    player = Player(player_spawn)
-    solid_rects = walls + [shelf.rect for shelf in shelves] + [catalogue.rect, cash_register.rect]
+    player = Player(player_spawn, step_sound=step_sound)
+    solid_rects = walls + [shelf.rect for shelf in shelves] + [catalogue.rect, cash_register.rect, employee_terminal.rect]
     state = GameState.PLAYING
     selected_shelf = None
     selected_item_id = None
@@ -862,7 +1241,28 @@ def main():
     finance_history_start = 0
     finance_active_input = False
     finance_message = ""
+    selected_employee_id = None
+    employee_editing_id = None
+    employee_add_mode = True
+    employee_fields = {
+        "employee_id": "",
+        "name": "",
+        "role": "Cashier",
+        "salary": "",
+    }
+    employee_active_input = None
+    employee_message = ""
+    employee_start = 0
     running = True
+
+    cursor_timer = 0.0
+    cursor_visible = True
+
+    shelf_scroll = SmoothScroll(0, 8)
+    catalogue_scroll = SmoothScroll(len(product_catalogue), 7)
+    finance_scroll = SmoothScroll(len(finance_history), 7)
+    picker_scroll = SmoothScroll(0, 8)
+    employee_scroll = SmoothScroll(len(employees), 7)
 
     def commit_finance_balance():
         nonlocal finance_balance, finance_history, finance_balance_text
@@ -883,6 +1283,7 @@ def main():
                 finance_message = (
                     f"{saved_entry[1]}: {sign}Rs. {saved_entry[2]:,.2f}"
                 )
+            finance_scroll.set_counts(len(finance_history), 7)
             finance_history_start = 0
             finance_active_input = False
         except ValueError:
@@ -892,12 +1293,29 @@ def main():
 
     while running:
         dt = clock.tick(FPS) / 1000
-        targeted_object = get_targeted_object(player, shelves, catalogue, cash_register)
+        targeted_object = get_targeted_object(player, shelves, catalogue, cash_register, employee_terminal)
+
+        cursor_timer += dt
+        cursor_visible = (int(cursor_timer * 2.2) % 2) == 0
+
+        shelf_scroll.update(dt)
+        catalogue_scroll.update(dt)
+        finance_scroll.update(dt)
+        picker_scroll.update(dt)
+        employee_scroll.update(dt)
+
+        shelf_first_item = shelf_scroll.get_first_visible_index()
+        catalogue_start = catalogue_scroll.get_first_visible_index()
+        finance_history_start = finance_scroll.get_first_visible_index()
+        product_picker_first_item = picker_scroll.get_first_visible_index()
+        employee_start = employee_scroll.get_first_visible_index()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
+                cursor_timer = 0.0
+                cursor_visible = True
                 if state == GameState.FINANCE_MENU:
                     if event.key in (pygame.K_e, pygame.K_ESCAPE):
                         state = GameState.PLAYING
@@ -950,19 +1368,35 @@ def main():
                         elif event.unicode.isdigit() or (event.unicode == "." and "." not in price_text):
                             price_text += event.unicode
                 elif state == GameState.PLAYING and event.key == pygame.K_e and targeted_object:
+                    if interact_sound:
+                        interact_sound.play()
                     if isinstance(targeted_object, Shelf):
                         selected_shelf = targeted_object
                         selected_item_id = None
+                        shelf_scroll.set_counts(len(selected_shelf.items), 8)
+                        shelf_scroll.scroll_to(0)
                         shelf_first_item = 0
                         menu_message = ""
                         state = GameState.SHELF_MENU
                     elif isinstance(targeted_object, ProductCatalogue):
+                        catalogue_scroll.set_counts(len(product_catalogue), 7)
+                        catalogue_scroll.scroll_to(0)
                         catalogue_start = 0
                         selected_catalogue_id = None
                         catalogue_message = ""
                         state = GameState.CATALOGUE_MENU
+                    elif isinstance(targeted_object, EmployeeTerminal):
+                        employees = list(load_employees(map_path))
+                        employee_scroll.set_counts(len(employees), 7)
+                        employee_scroll.scroll_to(0)
+                        employee_start = 0
+                        selected_employee_id = None
+                        employee_message = ""
+                        state = GameState.EMPLOYEE_MENU
                     else:
                         finance_balance_text = f"{finance_balance:.2f}"
+                        finance_scroll.set_counts(len(finance_history), 7)
+                        finance_scroll.scroll_to(0)
                         finance_history_start = 0
                         finance_active_input = False
                         finance_message = ""
@@ -975,13 +1409,47 @@ def main():
                 elif state == GameState.CATALOGUE_MENU and event.key in (pygame.K_e, pygame.K_ESCAPE):
                     state = GameState.PLAYING
                 elif state == GameState.CATALOGUE_MENU and event.key == pygame.K_DOWN:
-                    catalogue_start = min(catalogue_start + 1, max(0, len(product_catalogue) - 7))
+                    catalogue_scroll.scroll_by(1)
                 elif state == GameState.CATALOGUE_MENU and event.key == pygame.K_UP:
-                    catalogue_start = max(catalogue_start - 1, 0)
+                    catalogue_scroll.scroll_by(-1)
                 elif state == GameState.CATALOGUE_MENU and event.key == pygame.K_PAGEDOWN:
-                    catalogue_start = min(catalogue_start + 7, max(0, len(product_catalogue) - 7))
+                    catalogue_scroll.scroll_by(7)
                 elif state == GameState.CATALOGUE_MENU and event.key == pygame.K_PAGEUP:
-                    catalogue_start = max(catalogue_start - 7, 0)
+                    catalogue_scroll.scroll_by(-7)
+                elif state == GameState.EMPLOYEE_MENU and event.key in (pygame.K_e, pygame.K_ESCAPE):
+                    state = GameState.PLAYING
+                elif state == GameState.EMPLOYEE_MENU and event.key == pygame.K_DOWN:
+                    employee_scroll.scroll_by(1)
+                elif state == GameState.EMPLOYEE_MENU and event.key == pygame.K_UP:
+                    employee_scroll.scroll_by(-1)
+                elif state == GameState.EMPLOYEE_MENU and event.key == pygame.K_PAGEDOWN:
+                    employee_scroll.scroll_by(7)
+                elif state == GameState.EMPLOYEE_MENU and event.key == pygame.K_PAGEUP:
+                    employee_scroll.scroll_by(-7)
+                elif state == GameState.EMPLOYEE_EDITOR:
+                    if event.key == pygame.K_ESCAPE:
+                        state = GameState.EMPLOYEE_MENU
+                        employee_active_input = None
+                        employee_message = ""
+                    elif event.key == pygame.K_TAB:
+                        fields_cycle = ["employee_id", "name", "salary"]
+                        if employee_active_input in fields_cycle:
+                            curr_idx = fields_cycle.index(employee_active_input)
+                            employee_active_input = fields_cycle[(curr_idx + 1) % len(fields_cycle)]
+                        else:
+                            employee_active_input = fields_cycle[0]
+                    elif employee_active_input:
+                        curr_val = employee_fields.get(employee_active_input, "")
+                        if event.key == pygame.K_BACKSPACE:
+                            employee_fields[employee_active_input] = curr_val[:-1]
+                        elif employee_active_input == "employee_id":
+                            if event.unicode.isdigit():
+                                employee_fields[employee_active_input] += event.unicode
+                        elif employee_active_input == "salary":
+                            if event.unicode.isdigit() or (event.unicode == "." and "." not in curr_val):
+                                employee_fields[employee_active_input] += event.unicode
+                        elif event.unicode.isprintable() and len(curr_val) < 50:
+                            employee_fields[employee_active_input] += event.unicode
                 elif state == GameState.PLAYING and event.key == pygame.K_ESCAPE:
                     running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -995,9 +1463,7 @@ def main():
                     elif update_button.collidepoint(event.pos):
                         commit_finance_balance()
                     elif scroll_track and scroll_track.collidepoint(event.pos):
-                        finance_history_start = scroll_start_from_mouse(
-                            scroll_track, len(finance_history), visible_rows, event.pos[1]
-                        )
+                        finance_scroll.handle_track_click(scroll_track, event.pos[1])
                     else:
                         finance_active_input = False
                 elif state == GameState.PRODUCT_EDITOR:
@@ -1060,9 +1526,8 @@ def main():
                                     product_catalogue[product_catalogue.index(old_product)] = product_values
                                 product_catalogue.sort(key=lambda item: item[0])
                                 selected_catalogue_id = product_values[0]
-                                catalogue_start = min(
-                                    catalogue_start, max(0, len(product_catalogue) - 7)
-                                )
+                                catalogue_scroll.set_counts(len(product_catalogue), 7)
+                                catalogue_start = catalogue_scroll.get_first_visible_index()
                                 catalogue_active_input = None
                                 catalogue_message = ""
                                 state = GameState.CATALOGUE_MENU
@@ -1114,9 +1579,7 @@ def main():
                             catalogue_message = ""
                             state = GameState.PRODUCT_EDITOR
                     elif scroll_track and scroll_track.collidepoint(event.pos):
-                        catalogue_start = scroll_start_from_mouse(
-                            scroll_track, len(product_catalogue), visible_rows, event.pos[1]
-                        )
+                        catalogue_scroll.handle_track_click(scroll_track, event.pos[1])
                     else:
                         for product, row_rect, delete_rect in rows:
                             if delete_rect.collidepoint(event.pos):
@@ -1125,9 +1588,8 @@ def main():
                                     product_catalogue.remove(product)
                                     if selected_catalogue_id == product[0]:
                                         selected_catalogue_id = None
-                                    catalogue_start = min(
-                                        catalogue_start, max(0, len(product_catalogue) - 7)
-                                    )
+                                    catalogue_scroll.set_counts(len(product_catalogue), 7)
+                                    catalogue_start = catalogue_scroll.get_first_visible_index()
                                     catalogue_message = ""
                                 except DatabaseSetupError as error:
                                     catalogue_message = str(error)
@@ -1165,9 +1627,7 @@ def main():
                             active_input = None
                             state = GameState.EDIT_ITEM
                     elif scroll_track and scroll_track.collidepoint(event.pos):
-                        shelf_first_item = scroll_start_from_mouse(
-                            scroll_track, len(selected_shelf.items), visible_rows, event.pos[1]
-                        )
+                        shelf_scroll.handle_track_click(scroll_track, event.pos[1])
                     else:
                         for item, row_rect, delete_rect in rows:
                             if delete_rect.collidepoint(event.pos):
@@ -1176,6 +1636,8 @@ def main():
                                     selected_shelf.items.remove(item)
                                     if selected_item_id == item[0]:
                                         selected_item_id = None
+                                    shelf_scroll.set_counts(len(selected_shelf.items), 8)
+                                    shelf_first_item = shelf_scroll.get_first_visible_index()
                                     menu_message = ""
                                 except DatabaseSetupError as error:
                                     menu_message = str(error)
@@ -1196,9 +1658,7 @@ def main():
                         if picker_cancel.collidepoint(event.pos):
                             product_picker_open = False
                         elif picker_track.collidepoint(event.pos):
-                            product_picker_first_item = scroll_start_from_mouse(
-                                picker_track, len(available_products), picker_visible, event.pos[1]
-                            )
+                            picker_scroll.handle_track_click(picker_track, event.pos[1])
                         else:
                             for product, row_rect in picker_rows:
                                 if row_rect.collidepoint(event.pos):
@@ -1217,6 +1677,8 @@ def main():
                         ) = item_editor_layout()
                         if product_button.collidepoint(event.pos):
                             product_picker_open = True
+                            picker_scroll.set_counts(len(available_products), 8)
+                            picker_scroll.scroll_to(0)
                             product_picker_first_item = 0
                         elif quantity_box.collidepoint(event.pos):
                             active_input = "quantity"
@@ -1258,6 +1720,7 @@ def main():
                                     )
                                     selected_shelf.items.append((item_id, item_name, quantity, price))
                                     selected_shelf.items.sort(key=lambda item: item[0])
+                                    shelf_scroll.set_counts(len(selected_shelf.items), 8)
                                     selected_item_id = item_id
                                 else:
                                     update_shelf_item(
@@ -1269,6 +1732,7 @@ def main():
                                         editor_product[0], editor_product[1], quantity, price
                                     )
                                     selected_shelf.items.sort(key=lambda item: item[0])
+                                    shelf_scroll.set_counts(len(selected_shelf.items), 8)
                                     selected_item_id = editor_product[0]
                                 menu_message = ""
                                 active_input = None
@@ -1277,35 +1741,135 @@ def main():
                                 menu_message = "Choose a product and enter a valid quantity and price."
                             except DatabaseSetupError as error:
                                 menu_message = str(error)
+                elif state == GameState.EMPLOYEE_MENU:
+                    (
+                        panel, header_y, rows, add_button, edit_button,
+                        visible_rows, scroll_track, scroll_thumb,
+                    ) = employee_menu_layout(employees, selected_employee_id, employee_start)
+                    if add_button.collidepoint(event.pos):
+                        employee_add_mode = True
+                        employee_editing_id = None
+                        next_id = max([e[0] for e in employees], default=100) + 1
+                        employee_fields = {
+                            "employee_id": str(next_id),
+                            "name": "",
+                            "role": "Cashier",
+                            "salary": "18000.00",
+                        }
+                        employee_active_input = "name"
+                        employee_message = ""
+                        state = GameState.EMPLOYEE_EDITOR
+                    elif edit_button and edit_button.collidepoint(event.pos):
+                        selected_emp = next((e for e in employees if e[0] == selected_employee_id), None)
+                        if selected_emp:
+                            employee_add_mode = False
+                            employee_editing_id = selected_emp[0]
+                            employee_fields = {
+                                "employee_id": str(selected_emp[0]),
+                                "name": selected_emp[1],
+                                "role": selected_emp[2],
+                                "salary": f"{selected_emp[3]:.2f}",
+                            }
+                            employee_active_input = "name"
+                            employee_message = ""
+                            state = GameState.EMPLOYEE_EDITOR
+                    elif scroll_track and scroll_track.collidepoint(event.pos):
+                        employee_scroll.handle_track_click(scroll_track, event.pos[1])
+                    else:
+                        for emp, row_rect, delete_rect in rows:
+                            if delete_rect.collidepoint(event.pos):
+                                try:
+                                    delete_employee(map_path, emp[0])
+                                    employees.remove(emp)
+                                    if selected_employee_id == emp[0]:
+                                        selected_employee_id = None
+                                    employee_scroll.set_counts(len(employees), 7)
+                                    employee_start = employee_scroll.get_first_visible_index()
+                                    employee_message = ""
+                                except DatabaseSetupError as error:
+                                    employee_message = str(error)
+                                break
+                            if row_rect.collidepoint(event.pos):
+                                selected_employee_id = emp[0]
+                                employee_message = ""
+                                break
+                elif state == GameState.EMPLOYEE_EDITOR:
+                    (
+                        panel, boxes, role_prev, role_box, role_next,
+                        salary_down, salary_up, save_button, cancel_button,
+                    ) = employee_editor_layout()
+                    for field_name, field_box in boxes.items():
+                        if field_box.collidepoint(event.pos):
+                            employee_active_input = field_name
+                            break
+                    else:
+                        if role_prev.collidepoint(event.pos):
+                            curr_idx = ROLES.index(employee_fields["role"]) if employee_fields["role"] in ROLES else 0
+                            employee_fields["role"] = ROLES[(curr_idx - 1) % len(ROLES)]
+                        elif role_next.collidepoint(event.pos):
+                            curr_idx = ROLES.index(employee_fields["role"]) if employee_fields["role"] in ROLES else 0
+                            employee_fields["role"] = ROLES[(curr_idx + 1) % len(ROLES)]
+                        elif salary_down.collidepoint(event.pos):
+                            try:
+                                val = max(0.0, float(employee_fields["salary"] or "0") - 1000)
+                                employee_fields["salary"] = f"{val:.2f}"
+                            except ValueError:
+                                employee_fields["salary"] = "0.00"
+                        elif salary_up.collidepoint(event.pos):
+                            try:
+                                val = float(employee_fields["salary"] or "0") + 1000
+                                employee_fields["salary"] = f"{val:.2f}"
+                            except ValueError:
+                                employee_fields["salary"] = "1000.00"
+                        elif cancel_button.collidepoint(event.pos):
+                            state = GameState.EMPLOYEE_MENU
+                            employee_active_input = None
+                            employee_message = ""
+                        elif save_button.collidepoint(event.pos):
+                            try:
+                                emp_id = int(employee_fields["employee_id"])
+                                emp_name = employee_fields["name"].strip()
+                                emp_role = employee_fields["role"].strip()
+                                emp_salary = float(employee_fields["salary"])
+                                if not emp_name:
+                                    raise ValueError("Staff name cannot be empty.")
+                                if emp_salary < 0:
+                                    raise ValueError("Salary cannot be negative.")
+                                if employee_add_mode:
+                                    add_employee(map_path, emp_id, emp_name, emp_role, emp_salary)
+                                else:
+                                    update_employee(map_path, employee_editing_id, emp_id, emp_name, emp_role, emp_salary)
+                                employees = list(load_employees(map_path))
+                                selected_employee_id = emp_id
+                                employee_scroll.set_counts(len(employees), 7)
+                                employee_active_input = None
+                                employee_message = ""
+                                state = GameState.EMPLOYEE_MENU
+                            except ValueError as ve:
+                                employee_message = str(ve) if str(ve) else "Enter a valid ID, name, and salary."
+                            except DatabaseSetupError as error:
+                                employee_message = str(error)
             elif event.type == pygame.MOUSEWHEEL and state == GameState.CATALOGUE_MENU:
-                catalogue_start = max(
-                    0, min(catalogue_start - event.y, max(0, len(product_catalogue) - 7))
-                )
+                catalogue_scroll.scroll_by(-event.y)
             elif event.type == pygame.MOUSEWHEEL and state == GameState.FINANCE_MENU:
-                finance_history_start = max(
-                    0, min(finance_history_start - event.y, max(0, len(finance_history) - 7))
-                )
+                finance_scroll.scroll_by(-event.y)
             elif event.type == pygame.MOUSEWHEEL and state == GameState.SHELF_MENU:
-                shelf_first_item = max(
-                    0,
-                    min(shelf_first_item - event.y, max(0, len(selected_shelf.items) - 8)),
-                )
-            elif event.type == pygame.MOUSEWHEEL and state in (GameState.EDIT_ITEM, GameState.ADD_ITEM) and product_picker_open:
-                included_item_id = editing_item_id if state == GameState.EDIT_ITEM else None
-                available_products = available_products_for_shelf(
-                    selected_shelf, product_catalogue, included_item_id
-                )
-                product_picker_first_item = max(
-                    0,
-                    min(product_picker_first_item - event.y, max(0, len(available_products) - 8)),
-                )
+                shelf_scroll.scroll_by(-event.y)
+            elif event.type == pygame.MOUSEWHEEL and state == GameState.EMPLOYEE_MENU:
+                employee_scroll.scroll_by(-event.y)
+            elif (
+                event.type == pygame.MOUSEWHEEL
+                and state in (GameState.EDIT_ITEM, GameState.ADD_ITEM)
+                and product_picker_open
+            ):
+                picker_scroll.scroll_by(-event.y)
 
         if state == GameState.PLAYING:
             player.update(dt, solid_rects)
-            targeted_object = get_targeted_object(player, shelves, catalogue, cash_register)
+            targeted_object = get_targeted_object(player, shelves, catalogue, cash_register, employee_terminal)
 
         draw_world(
-            screen, player, walls, shelves, catalogue, cash_register, targeted_object, fonts
+            screen, player, walls, shelves, catalogue, cash_register, employee_terminal, targeted_object, fonts
         )
         if state == GameState.SHELF_MENU:
             draw_shelf_menu(
@@ -1320,6 +1884,7 @@ def main():
                 price_text,
                 state == GameState.ADD_ITEM,
                 active_input,
+                cursor_visible=cursor_visible,
             )
             if product_picker_open:
                 draw_product_picker(
@@ -1349,6 +1914,7 @@ def main():
                 catalogue_active_input,
                 catalogue_add_mode,
                 catalogue_message,
+                cursor_visible=cursor_visible,
             )
         elif state == GameState.FINANCE_MENU:
             draw_finance_menu(
@@ -1360,6 +1926,26 @@ def main():
                 finance_history_start,
                 finance_active_input,
                 finance_message,
+                cursor_visible=cursor_visible,
+            )
+        elif state == GameState.EMPLOYEE_MENU:
+            draw_employee_menu(
+                screen,
+                fonts,
+                employees,
+                selected_employee_id,
+                employee_start,
+                employee_message,
+            )
+        elif state == GameState.EMPLOYEE_EDITOR:
+            draw_employee_editor(
+                screen,
+                fonts,
+                employee_fields,
+                employee_active_input,
+                employee_add_mode,
+                employee_message,
+                cursor_visible=cursor_visible,
             )
         pygame.display.flip()
 

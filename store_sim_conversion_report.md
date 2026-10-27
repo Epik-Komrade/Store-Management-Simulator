@@ -64,46 +64,34 @@ The database name is derived from the map filename. For example, `store_level1.t
 - Quantity and price support direct text input as well as `+` / `−` buttons.
 - Shelf changes are saved to MySQL immediately.
 
-## Remaining school-project scope
+### Employee register and staff roster (Completed in v0.9.0)
 
-The following are the final planned features for the school version. Employee and customer entities are not required yet.
+- `E` is the one required interactable employee terminal tile.
+- Persistent `employees` MySQL table saves `employee_id`, `name`, `role`, `salary`, and `hire_date`.
+- First-run databases auto-seed 3 starter store staff (`Rahul Sharma` - Cashier, `Priya Patel` - Stocker, `Amit Kumar` - Store Assistant).
+- Roster table displays all staff, live monthly payroll total, and active count.
+- Full CRUD operations: hire new employees with ID/name/role/salary, edit roles & wages, and fire/delete employees with `X`.
+- Features a role selector (`Cashier`, `Stocker`, `Store Assistant`) and quick salary adjustment buttons (`-1k` / `+1k`).
+- Smooth scrolling and custom Royal Violet palette matching the v0.9 UI standard.
 
-### 1. Employee register
+### Cash register and finance history (Completed in v0.9.0)
 
-Add a new interactable employee-register tile and a permanent `employees` table. It will be a register only; employees will not move in the store for the school project.
-
-| Role | Future responsibility |
-|---|---|
-| Cashier | Handles checkout. |
-| Stocker | Restocks low shelves. |
-| Store Assistant | Helps customers. |
-
-Each employee will have an employee ID, name, role, and salary.
-
-### 2. Cash register and finance history
-
-Add a new cash-register tile with a permanent finance tracker.
-
+- `R` is the one required interactable cash register tile.
 - The store begins with **Rs. 20,000**.
 - The player manually enters a new balance.
 - The game compares it with the previous balance and saves the difference in a history table.
 - Example: Rs. 20,000 → Rs. 19,000 records `Loss: -Rs. 1,000`.
 - Example: Rs. 19,000 → Rs. 21,000 records `Profit: +Rs. 2,000`.
-- The register displays the current balance and permanent history.
+- The register displays the current balance, prominent large bold display, and permanent history table with scrollbar.
 
-Suggested tables:
+## School-project build order & completion status
 
-| Table | Purpose |
-|---|---|
-| `store_finance` | Saves current and starting balances. |
-| `finance_history` | Saves each balance change, its difference, description, and timestamp. |
-
-## School-project build order
-
-1. Add the employee-register tile, employee table, and roster UI.
-2. Add the cash-register tile, manual balance input, and finance history.
-3. Test all map validation and database CRUD operations.
-4. Prepare screenshots, schema notes, and explanation material for submission.
+1. [x] Add the shelf inventory and MySQL mapping system.
+2. [x] Add the product catalogue terminal, add/edit modals, and catalogue-level CRUD.
+3. [x] Add the cash-register tile, manual balance input, and permanent finance history.
+4. [x] Modernize UI to v0.9 with `ui_theme.py`, `ui_components.py`, smooth scrolling, drop shadows, and hover animations.
+5. [x] Add the employee-register tile, permanent `employees` MySQL table, and staff roster UI.
+6. [ ] Prepare screenshots, schema notes, synopsis, and CBSE project report for submission.
 
 ## Future development after the school project
 

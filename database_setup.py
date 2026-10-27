@@ -15,18 +15,18 @@ except ImportError:
     mysql = None
     MySQLError = Exception
 
-
+#_____________________________SETTINGS_____________________________
 MAP_WIDTH = 25
 MAP_HEIGHT = 15
-MAP_TILES = {"#", ".", "P", "S", "C", "R"}
+MAP_TILES = {"#", ".", "P", "S", "C", "R", "E"}
 
 
 class DatabaseSetupError(RuntimeError):
-    """A clear, user-facing error raised when the store database is unavailable."""
+    """error raised when the store database is unavailable."""
 
-
+#_____________________________NAME & MAP LOAD_____________________________
 def database_name_for_map(map_path):
-    """Build a safe, stable MySQL database name from a map filename."""
+    """MySQL database name from a map filename."""
     map_stem = os.path.splitext(os.path.basename(map_path))[0].lower()
     safe_stem = re.sub(r"[^a-z0-9_]", "_", map_stem).strip("_") or "store"
     name = safe_stem
@@ -37,7 +37,7 @@ def database_name_for_map(map_path):
 
 
 def read_store_map(map_path):
-    """Validate the store map and return its shelf coordinates in reading order."""
+    """chec the store map and return its shelf coordinates in reading order."""
     try:
         with open(map_path, "r", encoding="utf-8") as map_file:
             lines = [line.rstrip("\r\n") for line in map_file]
@@ -45,63 +45,51 @@ def read_store_map(map_path):
         raise DatabaseSetupError(f"Cannot read the map file: {error}") from error
 
     if len(lines) != MAP_HEIGHT or any(len(line) != MAP_WIDTH for line in lines):
-        raise DatabaseSetupError(
-            f"The map must be exactly {MAP_WIDTH} columns by {MAP_HEIGHT} rows."
-        )
+        raise DatabaseSetupError(f"The map must be exactly {MAP_WIDTH} columns by {MAP_HEIGHT} rows.")
 
     player_count = 0
     catalogue_count = 0
     register_count = 0
+    employee_count = 0
     shelf_positions = []
     for y, line in enumerate(lines):
         for x, tile in enumerate(line):
             if tile not in MAP_TILES:
-                raise DatabaseSetupError(
-                    f"Unsupported map symbol {tile!r} at row {y + 1}, column {x + 1}."
-                )
+                raise DatabaseSetupError(f"Unsupported map symbol {tile!r} at row {y + 1}, column {x + 1}.")
             if tile == "P":
                 player_count += 1
             elif tile == "C":
                 catalogue_count += 1
             elif tile == "R":
                 register_count += 1
+            elif tile == "E":
+                employee_count += 1
             elif tile == "S":
                 shelf_positions.append((x, y))
 
     if player_count != 1:
         raise DatabaseSetupError("The store map must contain exactly one player spawn (P).")
     if catalogue_count != 1:
-        raise DatabaseSetupError(
-            "The store map must contain exactly one product catalogue (C). Edit store_level1.txt."
-        )
+        raise DatabaseSetupError("The store map must contain exactly one product catalogue (C). Edit store_level1.txt.")
     if register_count != 1:
-        raise DatabaseSetupError(
-            "The store map must contain exactly one cash register (R). Edit store_level1.txt."
-        )
+        raise DatabaseSetupError("The store map must contain exactly one cash register (R). Edit store_level1.txt.")
+    if employee_count != 1:
+        raise DatabaseSetupError("The store map must contain exactly one employee terminal (E). Edit store_level1.txt.")
 
     return shelf_positions, "\n".join(lines)
 
-
+#_____________________________CONNECT_____________________________
 def _connect(database=None):
     if mysql is None:
-        raise DatabaseSetupError(
-            "mysql-connector-python is not installed. Install it before starting the launcher."
-        )
-    options = {
-        "host": DB_HOST,
-        "port": DB_PORT,
-        "user": DB_USER,
-        "password": DB_PASSWORD,
-    }
+        raise DatabaseSetupError("mysql-connector-python is not installed. Install it before starting the launcher.")
+    options = {"host": DB_HOST, "port": DB_PORT, "user": DB_USER, "password": DB_PASSWORD,}
     if database:
         options["database"] = database
 
     try:
         return mysql.connector.connect(**options)
     except MySQLError as error:
-        raise DatabaseSetupError(
-            f"Could not connect to MySQL at {DB_HOST}:{DB_PORT}. Check db_config.py and ensure MySQL Server is running. ({error})"
-        ) from error
+        raise DatabaseSetupError(f"Could not connect to MySQL at {DB_HOST}:{DB_PORT}. Check db_config.py and ensure MySQL Server is running. ({error})") from error
 
 
 def _database_exists(connection, database_name):
@@ -119,15 +107,13 @@ def _database_exists(connection, database_name):
 def _create_database(connection, database_name):
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-        )
+        cursor.execute(f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     except MySQLError as error:
         raise DatabaseSetupError(f"Could not create database {database_name!r}. ({error})") from error
     finally:
         cursor.close()
 
-
+#_____________________________TABLE CREATION_____________________________
 def _create_tables(connection):
     statements = (
         """
@@ -198,6 +184,15 @@ def _create_tables(connection):
                 FOREIGN KEY (finance_id) REFERENCES store_finance(finance_id)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS employees (
+            employee_id INT PRIMARY KEY,
+            name VARCHAR(50) NOT NULL,
+            role VARCHAR(30) NOT NULL,
+            salary DECIMAL(10, 2) NOT NULL,
+            hire_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
     )
     cursor = connection.cursor()
     try:
@@ -236,6 +231,33 @@ def _initialize_finance_if_needed(connection):
             "INSERT IGNORE INTO store_finance (finance_id, current_balance) VALUES (1, %s)",
             (20000.00,),
         )
+    finally:
+        cursor.close()
+
+
+DEFAULT_EMPLOYEES = [
+    (101, "Rahul Sharma", "Cashier", 18000.00),
+    (102, "Priya Patel", "Stocker", 16000.00),
+    (103, "Amit Kumar", "Store Assistant", 15000.00),
+]
+
+
+def _seed_employees_if_empty(connection):
+    """Seed initial store employees if the table is empty."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM employees")
+        emp_count = cursor.fetchone()[0]
+        if emp_count == 0:
+            cursor.executemany(
+                """
+                INSERT INTO employees (employee_id, name, role, salary)
+                VALUES (%s, %s, %s, %s)
+                """,
+                DEFAULT_EMPLOYEES,
+            )
+            return len(DEFAULT_EMPLOYEES)
+        return 0
     finally:
         cursor.close()
 
@@ -314,7 +336,7 @@ def _sync_shelves(connection, shelf_positions):
     finally:
         cursor.close()
 
-
+#_____________________________MAP HASH_____________________________
 def _save_map_metadata(connection, map_path, map_contents):
     map_hash = hashlib.sha256(map_contents.encode("utf-8")).hexdigest()
     cursor = connection.cursor()
@@ -345,7 +367,7 @@ def _save_map_metadata(connection, map_path, map_contents):
 
 
 def ensure_store_database(map_path):
-    """Create or synchronize the map database and return a short status report."""
+    """create/synch the map database and return a short status report."""
     shelf_positions, map_contents = read_store_map(map_path)
     database_name = database_name_for_map(map_path)
 
@@ -362,6 +384,7 @@ def ensure_store_database(map_path):
         _create_tables(database_connection)
         _seed_catalogue_if_empty(database_connection)
         _initialize_finance_if_needed(database_connection)
+        _seed_employees_if_empty(database_connection)
         added, reactivated, deactivated = _sync_shelves(database_connection, shelf_positions)
         _save_map_metadata(database_connection, map_path, map_contents)
         database_connection.commit()
@@ -380,7 +403,7 @@ def ensure_store_database(map_path):
         )
     return f"{database_name} is ready; map layout is unchanged."
 
-
+#_____________________________DB LOAD_____________________________
 def load_shelf_inventory(map_path):
     """Return saved shelf IDs and inventory rows, indexed by map position."""
     database_name = database_name_for_map(map_path)
@@ -468,7 +491,7 @@ def _check_product_values(item_id, item_name, price, minimum_quantity, maximum_q
     if minimum_quantity < 0 or maximum_quantity < minimum_quantity:
         raise DatabaseSetupError("Quantity range must be zero or higher, with a valid maximum.")
 
-
+#_____________________________CAT DB UPDATES_____________________________
 def add_catalogue_product(map_path, item_id, item_name, price, minimum_quantity, maximum_quantity):
     """Add a product that can later be placed on shelves."""
     _check_product_values(item_id, item_name, price, minimum_quantity, maximum_quantity)
@@ -576,7 +599,7 @@ def delete_catalogue_product(map_path, item_id):
         cursor.close()
         connection.close()
 
-
+#_____________________________FIN LOAD_____________________________
 def load_finance_data(map_path):
     """Load the current balance and newest-first permanent finance history."""
     database_name = database_name_for_map(map_path)
@@ -614,7 +637,7 @@ def load_finance_data(map_path):
         cursor.close()
         connection.close()
 
-
+#_____________________________DB UPDATES_____________________________
 def set_store_balance(map_path, new_balance):
     """Save a manual balance change and its profit/loss difference in one transaction."""
     if new_balance < 0:
@@ -722,6 +745,115 @@ def update_shelf_item(map_path, shelf_id, old_item_id, item_id, item_name, quant
     except MySQLError as error:
         connection.rollback()
         raise DatabaseSetupError(f"Could not update shelf {shelf_id}. ({error})") from error
+    finally:
+        cursor.close()
+        connection.close()
+
+
+#_____________________________EMPLOYEES CRUD_____________________________
+def load_employees(map_path):
+    """Return all saved employees from MySQL ordered by employee_id."""
+    connection = _connect(database_name_for_map(map_path))
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT employee_id, name, role, salary, hire_date
+            FROM employees
+            ORDER BY employee_id ASC
+            """
+        )
+        rows = cursor.fetchall()
+        employees = []
+        for row in rows:
+            emp_id = int(row[0])
+            name = str(row[1])
+            role = str(row[2])
+            salary = float(row[3])
+            hire_date = str(row[4])
+            employees.append((emp_id, name, role, salary, hire_date))
+        return employees
+    except MySQLError as error:
+        raise DatabaseSetupError(f"Could not load employee records. ({error})") from error
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def add_employee(map_path, employee_id, name, role, salary):
+    """Hire / add a new employee record to MySQL."""
+    if not name.strip():
+        raise DatabaseSetupError("Employee name cannot be empty.")
+    if salary < 0:
+        raise DatabaseSetupError("Salary cannot be negative.")
+
+    connection = _connect(database_name_for_map(map_path))
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO employees (employee_id, name, role, salary)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (employee_id, name.strip(), role.strip(), salary),
+        )
+        connection.commit()
+    except MySQLError as error:
+        connection.rollback()
+        if getattr(error, "errno", None) == 1062:
+            raise DatabaseSetupError(f"Employee ID {employee_id} already exists.") from error
+        raise DatabaseSetupError(f"Could not add employee. ({error})") from error
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_employee(map_path, old_id, new_id, name, role, salary):
+    """Update an existing employee record."""
+    if not name.strip():
+        raise DatabaseSetupError("Employee name cannot be empty.")
+    if salary < 0:
+        raise DatabaseSetupError("Salary cannot be negative.")
+
+    connection = _connect(database_name_for_map(map_path))
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE employees
+            SET employee_id = %s, name = %s, role = %s, salary = %s
+            WHERE employee_id = %s
+            """,
+            (new_id, name.strip(), role.strip(), salary, old_id),
+        )
+        if cursor.rowcount == 0:
+            raise DatabaseSetupError("That employee record no longer exists.")
+        connection.commit()
+    except MySQLError as error:
+        connection.rollback()
+        if getattr(error, "errno", None) == 1062:
+            raise DatabaseSetupError(f"Employee ID {new_id} already exists.") from error
+        raise DatabaseSetupError(f"Could not update employee. ({error})") from error
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def delete_employee(map_path, employee_id):
+    """Fire / remove an employee record from MySQL."""
+    connection = _connect(database_name_for_map(map_path))
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM employees WHERE employee_id = %s",
+            (employee_id,),
+        )
+        if cursor.rowcount != 1:
+            raise DatabaseSetupError("That employee record no longer exists.")
+        connection.commit()
+    except MySQLError as error:
+        connection.rollback()
+        raise DatabaseSetupError(f"Could not remove employee {employee_id}. ({error})") from error
     finally:
         cursor.close()
         connection.close()
