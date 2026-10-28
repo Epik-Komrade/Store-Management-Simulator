@@ -4,13 +4,10 @@ import math
 import pygame
 
 from ui_theme import (
-    DELETE_RED,
-    DELETE_RED_HOVER,
     INPUT_BG,
     INPUT_BORDER_DEFAULT,
     OVERLAY_COLOR,
     PANEL_BG,
-    SCROLL_TRACK_COLOR,
     TEXT_MUTED,
     TEXT_PRIMARY,
     brighten_color,
@@ -238,6 +235,7 @@ class SmoothScroll:
         self.visible_rows = visible_rows
         max_start = max(0, self.item_count - self.visible_rows)
         self.target_offset = clamp(self.target_offset, 0.0, float(max_start))
+        self.current_offset = clamp(self.current_offset, 0.0, float(max_start))
 
     def scroll_by(self, delta):
         max_start = max(0, self.item_count - self.visible_rows)
@@ -245,7 +243,9 @@ class SmoothScroll:
 
     def scroll_to(self, index):
         max_start = max(0, self.item_count - self.visible_rows)
-        self.target_offset = clamp(float(index), 0.0, float(max_start))
+        clamped = clamp(float(index), 0.0, float(max_start))
+        self.target_offset = clamped
+        self.current_offset = clamped
 
     def update(self, dt):
         """Smoothly ease current scroll offset towards target offset."""

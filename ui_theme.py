@@ -100,6 +100,17 @@ EMPLOYEE_THEME = StationTheme(
     subtle_accent=(224, 214, 242),
 )
 
+# Storage Depot Theme: Warm Industrial Crate Amber & Bronze
+STORAGE_THEME = StationTheme(
+    name="Storage",
+    tile_color=(205, 128, 42),
+    edge_color=(156, 92, 22),
+    button_color=(185, 112, 32),
+    button_hover=(210, 134, 48),
+    selected_bg=(255, 238, 215),
+    subtle_accent=(245, 222, 192),
+)
+
 # -------------------------------------------------------------------------
 # Typography & Font Cache
 # -------------------------------------------------------------------------
@@ -122,6 +133,8 @@ def get_font(name="body"):
             _FONT_CACHE[name] = pygame.font.SysFont("Arial", 22, bold=True)
         elif name == "body":
             _FONT_CACHE[name] = pygame.font.SysFont("Arial", 22)
+        elif name == "header":
+            _FONT_CACHE[name] = pygame.font.SysFont("Arial", 18, bold=True)
         elif name == "small":
             _FONT_CACHE[name] = pygame.font.SysFont("Arial", 16)
         elif name == "small_bold":
@@ -137,6 +150,7 @@ def get_fonts_dict():
     return {
         "title": get_font("title"),
         "balance": get_font("balance"),
+        "header": get_font("header"),
         "body": get_font("body"),
         "small": get_font("small"),
     }

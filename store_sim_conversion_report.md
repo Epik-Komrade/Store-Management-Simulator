@@ -84,6 +84,18 @@ The database name is derived from the map filename. For example, `store_level1.t
 - Example: Rs. 19,000 → Rs. 21,000 records `Profit: +Rs. 2,000`.
 - The register displays the current balance, prominent large bold display, and permanent history table with scrollbar.
 
+### Audio system (Completed in v0.9.0)
+
+- Paced walking footstep audio (`step.wav`) triggering every 0.28s only when the manager is physically in motion.
+- Station interaction chime (`fruit1.wav`) played strictly when opening station terminals (Shelf, Catalogue, Register, Staff Roster), avoiding button-click noise inside menus.
+
+### Integrated Map Editor (Completed in v1.0.0)
+
+- Dedicated visual level designer (`mapeditor.py`) strictly managing `store_level1.txt`.
+- Procedural WYSIWYG station rendering identical to the simulator.
+- Live validation checklist and auto-relocation rules for singletons (`P`, `C`, `R`, `E`).
+- One-click launcher shortcut button in `store_launcher.py`.
+
 ## School-project build order & completion status
 
 1. [x] Add the shelf inventory and MySQL mapping system.
@@ -91,7 +103,31 @@ The database name is derived from the map filename. For example, `store_level1.t
 3. [x] Add the cash-register tile, manual balance input, and permanent finance history.
 4. [x] Modernize UI to v0.9 with `ui_theme.py`, `ui_components.py`, smooth scrolling, drop shadows, and hover animations.
 5. [x] Add the employee-register tile, permanent `employees` MySQL table, and staff roster UI.
-6. [ ] Prepare screenshots, schema notes, synopsis, and CBSE project report for submission.
+6. [x] Add walking footsteps and station interaction audio.
+7. [x] Build and integrate visual Map Editor targeting `store_level1.txt`.
+8. [ ] Implement Manager Password & Anti-Tamper Launcher Handshake (Shelved for final step).
+9. [ ] Prepare screenshots, schema notes, synopsis, and CBSE project report for submission.
+
+## Shelved Feature: Manager Password & Anti-Tamper Security Architecture
+*(Planned for final implementation after gameplay features)*
+
+### 1. Master Manager Password
+- **Scope**: Single master password input on `store_launcher.py` (no username needed).
+- **Default Master Password**: `admin123`.
+- **Change Password**: In-launcher modal allowing the manager to update the password with confirmation.
+- **Database Storage**: Salted SHA-256 hash stored in a dedicated `admin_security` or `system_settings` MySQL table.
+
+### 2. Launcher-Only Execution Handshake
+- `store_sim.py` will reject direct standalone execution (e.g. direct double-click or `python store_sim.py` in terminal).
+- `store_launcher.py` passes a cryptographically signed runtime session token (`--auth-token <hash>`) upon successful password unlock.
+- If launched without this valid handshake token, `store_sim.py` aborts immediately with an `Unauthorized Access` alert dialog.
+
+### 3. File Tamper-Proofing (SHA-256 Integrity Check)
+- Launcher computes a SHA-256 checksum of `store_sim.py` before launching.
+- If code is altered externally, an integrity mismatch alert is displayed.
+
+### 4. Zero-Friction Development Guarantee
+- Developer bypass flag (`--dev` or `DEV_MODE = True`) to allow instant running, testing, and automated scripts without entering passwords or recomputing hashes during active development.
 
 ## Future development after the school project
 
@@ -103,8 +139,6 @@ The database name is derived from the map filename. For example, `store_level1.t
 - Employee entities that act as cashiers, stockers, and store assistants.
 - Staff salaries, customer satisfaction, lost sales, and a daily store cycle.
 - End-of-day reports, store upgrades, random events, and sales charts.
-- A map editor for shelves, registers, storage, and staff terminals.
-- A simple plaintext launcher password for the local/school version; a hashed password system can replace it later.
 
 ## Technical rules to preserve
 

@@ -12,24 +12,20 @@ import pygame
 from ui_theme import (
     ACCENT_COLOR,
     CATALOGUE_THEME,
-    DELETE_RED,
     EMPLOYEE_THEME,
     FLOOR_COLOR,
-    INPUT_BG,
-    INPUT_BORDER_DEFAULT,
     LOSS_RED,
     PANEL_BG,
     PLAYER_COLOR,
     PROFIT_GREEN,
     REGISTER_THEME,
-    SCROLL_TRACK_COLOR,
     SHELF_THEME,
+    STORAGE_THEME,
     TEXT_MUTED,
     TEXT_PRIMARY,
     WALL_COLOR,
     WINDOW_COLOR,
     brighten_color,
-    get_drop_shadow,
 )
 
 #_____________________________SETTINGS_____________________________
@@ -46,7 +42,7 @@ FPS = 60
 MAP_FILENAME = "store_level1.txt"
 
 # Valid map tiles conforming to database_setup.py MAP_TILES
-MAP_TILES = ("#", ".", "S", "C", "R", "E", "P")
+MAP_TILES = ("#", ".", "S", "C", "R", "E", "B", "P")
 
 TOOL_METADATA = {
     "#": {
@@ -91,6 +87,13 @@ TOOL_METADATA = {
         "color": EMPLOYEE_THEME.tile,
         "is_singleton": True,
     },
+    "B": {
+        "name": "Storage Depot",
+        "hotkey": "B",
+        "description": "Backroom storage & restock station",
+        "color": STORAGE_THEME.tile,
+        "is_singleton": True,
+    },
     "P": {
         "name": "Manager Spawn",
         "hotkey": "P",
@@ -129,6 +132,7 @@ def default_template():
 
     # Singletons
     grid[1][1] = "P"
+    grid[1][11] = "B"
     grid[1][12] = "C"
     grid[1][13] = "R"
     grid[1][14] = "E"
@@ -180,7 +184,7 @@ def save_store_map(grid):
 
 def validate_store_map(grid):
     """Verify conformity with store simulator and database_setup requirements."""
-    counts = {"#": 0, ".": 0, "S": 0, "C": 0, "R": 0, "E": 0, "P": 0}
+    counts = {"#": 0, ".": 0, "S": 0, "C": 0, "R": 0, "E": 0, "B": 0, "P": 0}
     for row in grid:
         for char in row:
             if char in counts:
@@ -195,6 +199,8 @@ def validate_store_map(grid):
         errors.append("Must have exactly 1 Cash Register (R)")
     if counts["E"] != 1:
         errors.append("Must have exactly 1 Employee Terminal (E)")
+    if counts.get("B", 0) > 1:
+        errors.append("Can have at most 1 Storage Depot (B)")
     if counts["S"] < 1:
         errors.append("Store requires at least 1 Shelf (S)")
 
@@ -259,6 +265,16 @@ def draw_tile_at(surface, tile_char, rect, is_hovered=False):
         pygame.draw.line(surface, edge_col, (badge_rect.x + 3, badge_rect.y + 5), (badge_rect.right - 4, badge_rect.y + 5), 2)
         pygame.draw.line(surface, (140, 140, 140), (badge_rect.x + 3, badge_rect.y + 9), (badge_rect.right - 4, badge_rect.y + 9), 1)
         pygame.draw.line(surface, (140, 140, 140), (badge_rect.x + 3, badge_rect.y + 13), (badge_rect.right - 4, badge_rect.y + 13), 1)
+    elif tile_char == "B":
+        # Storage Depot crate
+        crate_edge = STORAGE_THEME.edge
+        crate_col = STORAGE_THEME.tile
+        pygame.draw.rect(surface, crate_col, rect, border_radius=4)
+        pygame.draw.rect(surface, crate_edge, rect, 3, border_radius=4)
+        crate_inner = rect.inflate(-10, -10)
+        pygame.draw.rect(surface, crate_edge, crate_inner, 2, border_radius=2)
+        pygame.draw.line(surface, crate_edge, crate_inner.topleft, crate_inner.bottomright, 2)
+        pygame.draw.line(surface, crate_edge, crate_inner.bottomleft, crate_inner.topright, 2)
     elif tile_char == "P":
         # Manager spawn avatar
         pygame.draw.circle(surface, PLAYER_COLOR, rect.center, 12)
@@ -291,6 +307,11 @@ def draw_mini_preview(surface, tile_char, rect):
         pygame.draw.rect(surface, EMPLOYEE_THEME.edge, rect, 2, border_radius=3)
         badge = pygame.Rect(rect.centerx - 4, rect.centery - 5, 8, 10)
         pygame.draw.rect(surface, (255, 255, 255), badge, border_radius=1)
+    elif tile_char == "B":
+        pygame.draw.rect(surface, STORAGE_THEME.tile, rect, border_radius=3)
+        pygame.draw.rect(surface, STORAGE_THEME.edge, rect, 2, border_radius=3)
+        pygame.draw.line(surface, STORAGE_THEME.edge, rect.topleft, rect.bottomright, 1)
+        pygame.draw.line(surface, STORAGE_THEME.edge, rect.bottomleft, rect.topright, 1)
     elif tile_char == "P":
         pygame.draw.circle(surface, PLAYER_COLOR, rect.center, 8)
         pygame.draw.circle(surface, ACCENT_COLOR, rect.center, 8, 2)
@@ -333,13 +354,13 @@ def main():
     sb_w = SIDEBAR_WIDTH - 28
 
     tool_rects = {}
-    tool_y = 86
+    tool_y = 74
     for char in MAP_TILES:
-        tool_rects[char] = pygame.Rect(sb_x, tool_y, sb_w, 32)
-        tool_y += 36
+        tool_rects[char] = pygame.Rect(sb_x, tool_y, sb_w, 28)
+        tool_y += 31
 
-    save_btn_rect = pygame.Rect(sb_x, 484, sb_w, 36)
-    reset_btn_rect = pygame.Rect(sb_x, 526, sb_w, 26)
+    save_btn_rect = pygame.Rect(sb_x, 476, sb_w, 36)
+    reset_btn_rect = pygame.Rect(sb_x, 518, sb_w, 26)
 
     running = True
     mouse_is_down = False
@@ -408,6 +429,8 @@ def main():
                     current_tool = "R"
                 elif event.key == pygame.K_e:
                     current_tool = "E"
+                elif event.key == pygame.K_b:
+                    current_tool = "B"
                 elif event.key == pygame.K_p:
                     current_tool = "P"
 
@@ -481,17 +504,17 @@ def main():
 
         # Header Title
         title_surf = fonts["title"].render("STORE MAP EDITOR", True, TEXT_PRIMARY)
-        screen.blit(title_surf, (sb_x, 16))
+        screen.blit(title_surf, (sb_x, 12))
 
         sub_surf = fonts["small"].render(f"Target: {MAP_FILENAME} (25x15 Grid)", True, TEXT_MUTED)
-        screen.blit(sub_surf, (sb_x, 40))
+        screen.blit(sub_surf, (sb_x, 34))
 
         # Subtle divider
-        pygame.draw.line(screen, (230, 236, 242), (sb_x, 58), (sb_x + sb_w, 58), 1)
+        pygame.draw.line(screen, (230, 236, 242), (sb_x, 50), (sb_x + sb_w, 50), 1)
 
         # Section: Tile Palette
         pal_label = fonts["section"].render("PALETTE TOOLS", True, TEXT_MUTED)
-        screen.blit(pal_label, (sb_x, 68))
+        screen.blit(pal_label, (sb_x, 56))
 
         for char, r in tool_rects.items():
             meta = TOOL_METADATA[char]
@@ -516,25 +539,25 @@ def main():
             pygame.draw.rect(screen, card_border, r, border_width, border_radius=4)
 
             # Mini Tile Preview Icon
-            icon_r = pygame.Rect(r.x + 6, r.y + 5, 22, 22)
+            icon_r = pygame.Rect(r.x + 6, r.y + 4, 20, 20)
             draw_mini_preview(screen, char, icon_r)
 
             # Tool Name
             name_col = ACCENT_COLOR if is_selected else TEXT_PRIMARY
             name_surf = fonts["body_bold" if is_selected else "body"].render(meta["name"], True, name_col)
-            screen.blit(name_surf, (r.x + 36, r.y + 6))
+            screen.blit(name_surf, (r.x + 34, r.y + 5))
 
             # Hotkey Badge
             badge_surf = fonts["badge"].render(f"[{meta['hotkey']}]", True, TEXT_MUTED if not is_selected else ACCENT_COLOR)
-            screen.blit(badge_surf, (r.right - badge_surf.get_width() - 8, r.y + 7))
+            screen.blit(badge_surf, (r.right - badge_surf.get_width() - 8, r.y + 6))
 
         # Section: Validation Checklist
         val_summary = validate_store_map(grid)
-        val_y = 346
+        val_y = 328
         val_label = fonts["section"].render("MAP VALIDATION", True, TEXT_MUTED)
         screen.blit(val_label, (sb_x, val_y))
 
-        val_card = pygame.Rect(sb_x, val_y + 16, sb_w, 108)
+        val_card = pygame.Rect(sb_x, val_y + 16, sb_w, 122)
         val_bg = (248, 252, 249) if val_summary["is_valid"] else (255, 248, 248)
         val_border = PROFIT_GREEN if val_summary["is_valid"] else (230, 180, 180)
         pygame.draw.rect(screen, val_bg, val_card, border_radius=6)
@@ -546,6 +569,7 @@ def main():
             ("C Catalogue:", c["C"] == 1, f"{c['C']}/1"),
             ("R Cash Register:", c["R"] == 1, f"{c['R']}/1"),
             ("E Staff Desk:", c["E"] == 1, f"{c['E']}/1"),
+            ("B Storage Depot:", c["B"] <= 1, f"{c['B']}/1"),
             ("S Shelves:", c["S"] >= 1, f"{c['S']} placed"),
         ]
 
@@ -561,7 +585,7 @@ def main():
 
             cnt_surf = fonts["small"].render(count_str, True, TEXT_MUTED if ok else LOSS_RED)
             screen.blit(cnt_surf, (val_card.right - cnt_surf.get_width() - 10, item_y))
-            item_y += 19
+            item_y += 18
 
         # Save Button
         save_hover = save_btn_rect.collidepoint(mouse_pos)
